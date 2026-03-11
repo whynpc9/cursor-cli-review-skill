@@ -1,24 +1,44 @@
 ---
 name: cursor-cli-review
 description: >-
-  Code review using Cursor CLI in non-interactive mode. Spawns multiple Cursor agent
-  reviewers to analyze code changes from distinct critical perspectives (correctness,
-  design, security). Default model: opus-4.6. Use this skill when the user asks for
-  "code review", "review my changes", "review this PR", "review my code", "cursor review",
-  or wants automated multi-perspective code analysis on diffs or staged changes.
+  Code review and development planning using Cursor CLI in non-interactive mode. Two modes:
+  (1) Review — spawns multiple Cursor agent reviewers to analyze code changes from distinct
+  critical perspectives (correctness, design, security); (2) Plan — spawns multiple Cursor
+  agent planners to produce a structured development plan from user requirements (architecture,
+  implementation, risk analysis). Default model: opus-4.6. Use this skill when the user asks
+  for "code review", "review my changes", "review this PR", "plan this feature", "make a
+  development plan", "plan how to implement", or wants automated multi-perspective code
+  analysis or development planning.
 ---
 
-# Cursor CLI Code Review
+# Cursor CLI Code Review & Development Planning
 
-Spawn Cursor CLI agents in non-interactive mode (`agent -p`) to review code changes from
-multiple critical perspectives. The deliverable is a synthesized verdict — do NOT make
-changes to the code.
+Spawn Cursor CLI agents in non-interactive mode (`agent -p`) to either review code changes
+or produce development plans, each from multiple independent perspectives.
 
-**Hard constraint:** Reviewers MUST run via the Cursor CLI (`agent -p`). Do NOT use
-subagents, the Task tool, or any internal delegation mechanism as reviewers — those run
-on your own model within the same session, which defeats the purpose of independent review.
+**Hard constraint:** All agents MUST run via the Cursor CLI (`agent -p`). Do NOT use
+subagents, the Task tool, or any internal delegation mechanism — those run on your own
+model within the same session, which defeats the purpose of independent analysis.
 
-## Step 1 — Determine Scope
+## Mode Selection
+
+Determine which mode to use based on the user's request:
+
+| Trigger phrases | Mode |
+|---|---|
+| "review my code", "review changes", "review this PR", "code review" | **Review** — go to [Code Review](#code-review) |
+| "plan this feature", "make a plan", "how to implement", "development plan", "design a solution" | **Plan** — go to [Development Planning](#development-planning) |
+
+If ambiguous, ask the user which mode they want.
+
+---
+
+# Code Review
+
+Spawn reviewers to analyze code changes from multiple critical perspectives. The deliverable
+is a synthesized verdict — do NOT make changes to the code.
+
+## Review Step 1 — Determine Scope
 
 Identify what to review from context (recent diffs, referenced files, user message).
 
@@ -45,7 +65,7 @@ git diff -- path/to/file1 path/to/file2
 If the diff is very large (>2000 lines), consider scoping to the most critical files or
 asking the user which areas to focus on.
 
-## Step 2 — Select Reviewers
+## Review Step 2 — Select Reviewers
 
 Assess change size and assign reviewer lenses:
 
@@ -70,7 +90,7 @@ authorization gaps, secrets or credentials in code, unsafe deserialization, SSRF
 vectors, dependency vulnerabilities, insecure defaults, information leakage in error
 messages.
 
-## Step 3 — Spawn Reviewers via Cursor CLI
+## Review Step 3 — Spawn Reviewers via Cursor CLI
 
 Create a temp directory for reviewer output:
 
@@ -140,7 +160,7 @@ Here is the diff to review:
 
 Name each output file after the lens: `correctness.md`, `design.md`, `security.md`.
 
-## Step 4 — Verify and Synthesize Verdict
+## Review Step 4 — Verify and Synthesize Verdict
 
 Before reading reviewer output, confirm the output files exist and are non-empty:
 
@@ -182,7 +202,7 @@ For each finding:
 - **NEEDS CHANGES** — warning-level findings but no critical issues
 - **BLOCK** — one or more critical findings
 
-## Step 5 — Render Judgment
+## Review Step 5 — Render Judgment
 
 After synthesizing the reviewers, apply your own judgment. Reviewers are instructed to be
 thorough and may over-flag. Using the stated intent and project context as your frame,
@@ -198,33 +218,245 @@ Append to the verdict:
 <prioritized list of what the author should address before merging>
 ```
 
-## Step 6 — Clean Up
+## Review Step 6 — Clean Up
 
 ```sh
 rm -rf "$REVIEW_DIR"
 ```
+
+---
+
+# Development Planning
+
+Spawn planners to produce a structured development plan based on user requirements. Each
+planner analyzes the codebase and requirements from a different perspective, then their
+outputs are synthesized into a single actionable plan. The deliverable is a plan document
+— do NOT implement any code.
+
+## Plan Step 1 — Clarify Requirements
+
+Extract the user's requirements from their message. Summarize:
+
+1. **Goal** — what the user wants to build or change (one sentence)
+2. **Context** — relevant existing code, constraints, or preferences mentioned
+3. **Scope** — is this a new feature, refactor, migration, integration, or bug fix?
+
+If the requirements are vague, ask the user to clarify before proceeding. A good plan
+needs clear input.
+
+Gather codebase context for the planners:
+
+```sh
+# Project structure overview
+find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' | head -100
+
+# Key config files
+cat package.json 2>/dev/null || cat requirements.txt 2>/dev/null || cat go.mod 2>/dev/null || true
+```
+
+## Plan Step 2 — Select Planners
+
+Assess requirement complexity and assign planner lenses:
+
+| Complexity | Threshold | Planners |
+|---|---|---|
+| Simple | Single file or small change, clear approach | 1 (Implementer) |
+| Medium | Multiple files, some design decisions needed | 2 (Architect + Implementer) |
+| Complex | Cross-cutting concerns, new subsystem, or major refactor | 3 (Architect + Implementer + Risk Analyst) |
+
+### Planner Lenses
+
+**Architect** — High-level system design: component boundaries, data flow, API contracts,
+module dependencies, technology choices, patterns to follow (or avoid), how the new work
+fits into the existing codebase structure.
+
+**Implementer** — Concrete implementation steps: which files to create or modify, function
+signatures, data structures, migration steps, configuration changes, the exact sequence of
+work broken into small mergeable increments.
+
+**Risk Analyst** — Potential pitfalls: edge cases, breaking changes, backward compatibility,
+performance implications, dependency conflicts, testing gaps, operational concerns
+(deployment, rollback), areas where requirements are ambiguous and assumptions may be wrong.
+
+## Plan Step 3 — Spawn Planners via Cursor CLI
+
+Create a temp directory for planner output:
+
+```sh
+PLAN_DIR=$(mktemp -d /tmp/cursor-cli-plan.XXXXXX)
+```
+
+Save the codebase context to a file for planners to reference:
+
+```sh
+echo "=== Project Structure ===" > "$PLAN_DIR/context.txt"
+find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' | head -100 >> "$PLAN_DIR/context.txt"
+echo -e "\n=== Key Config ===" >> "$PLAN_DIR/context.txt"
+cat package.json 2>/dev/null >> "$PLAN_DIR/context.txt" || true
+```
+
+Spawn each planner using `agent -p` in non-interactive print mode with plan mode. The
+default model is `opus-4.6`; override with a different `--model` if the user requests it.
+
+```sh
+agent -p "PLANNER_PROMPT" \
+  --model opus-4.6 \
+  --mode plan \
+  --output-format text \
+  --trust \
+  > "$PLAN_DIR/architect.md" 2>/dev/null
+```
+
+Run each planner command with `is_background: true` and spawn **all planners in parallel**.
+
+### Planner prompt template
+
+Each planner gets a single prompt containing:
+
+1. Their assigned lens (full description from the Planner Lenses section above)
+2. The user's requirements
+3. The codebase context
+4. These instructions:
+
+```
+You are a development planner focusing on [{LENS_NAME}].
+
+Your lens definition:
+{LENS_FULL_DESCRIPTION}
+
+Your job is to analyze the requirements and codebase, then produce a thorough plan
+from your perspective. Be specific — reference actual files, directories, and patterns
+found in the codebase.
+
+Requirements:
+---
+{USER_REQUIREMENTS}
+---
+
+Codebase context:
+---
+{CODEBASE_CONTEXT}
+---
+
+Structure your output as:
+
+## {LENS_NAME} Analysis
+
+### Key Observations
+<what you noticed about the codebase relevant to this task>
+
+### Recommendations
+<numbered list of specific recommendations from your lens>
+
+### Detailed Plan
+<step-by-step breakdown from your perspective, referencing concrete files and code>
+
+Be concrete: name files, functions, and modules. Avoid vague advice like "consider
+performance" — instead say exactly what to do and where.
+```
+
+Name each output file after the lens: `architect.md`, `implementer.md`, `risk-analyst.md`.
+
+## Plan Step 4 — Verify and Synthesize Plan
+
+Before reading planner output, confirm the output files exist and are non-empty:
+
+```sh
+ls -la "$PLAN_DIR"/*.md
+```
+
+If any output file is missing or empty, note the failure in the plan — do not silently
+skip a planner.
+
+Read each planner's output file from `$PLAN_DIR/`. Merge overlapping observations and
+resolve conflicts (where planners disagree, note both perspectives and your recommendation).
+
+Produce a single development plan:
+
+```
+## Requirements
+<restated goal and scope>
+
+## Architecture Overview
+<high-level design from the Architect's analysis — components, data flow, key decisions>
+
+## Implementation Plan
+<ordered list of incremental steps from the Implementer's analysis>
+
+For each step:
+- **Step N**: one-line summary
+- Files: which files to create or modify
+- Details: what to do
+- Dependencies: which steps must complete first
+
+## Risk Assessment
+<findings from the Risk Analyst, ordered by likelihood × impact>
+
+For each risk:
+- **[high/medium/low]** Description
+- Mitigation: concrete preventive action
+
+## Open Questions
+<anything that remains ambiguous and needs user input before implementation>
+```
+
+## Plan Step 5 — Render Judgment
+
+After synthesizing, apply your own judgment. Planners may over-engineer or miss simpler
+approaches. Evaluate:
+
+- Is the plan proportional to the requirement's complexity?
+- Are there simpler alternatives the planners overlooked?
+- Do the implementation steps form a logical, incremental sequence?
+- Are the risks realistic or exaggerated?
+
+Append to the plan:
+
+```
+## Final Recommendation
+<your assessment of the plan — what to follow as-is, what to simplify, what to watch out for>
+
+## Suggested Milestones
+<break the plan into 2–4 checkpoints where the user can verify progress before continuing>
+```
+
+## Plan Step 6 — Clean Up
+
+```sh
+rm -rf "$PLAN_DIR"
+```
+
+---
 
 ## Configuration
 
 | Parameter     | Default      | Description                                         |
 |---------------|--------------|-----------------------------------------------------|
 | Model         | `opus-4.6`   | Override via user request or env `CURSOR_REVIEW_MODEL` |
-| Mode          | `ask`        | Read-only review mode (reviewers cannot edit code)  |
-| Output format | `text`       | Plain text reviewer output                          |
+| Review mode   | `ask`        | Read-only review mode (reviewers cannot edit code)  |
+| Plan mode     | `plan`       | Planning mode (planners analyze but don't implement) |
+| Output format | `text`       | Plain text agent output                             |
 
-The `--trust` flag skips workspace trust prompts in non-interactive mode. The `--mode ask`
-flag ensures reviewers operate in read-only mode and cannot modify code.
+The `--trust` flag skips workspace trust prompts in non-interactive mode. Review agents use
+`--mode ask` (read-only). Plan agents use `--mode plan` (analysis and planning without edits).
 
 ## CI/CD Integration
 
-For use in CI pipelines, the entire review can be driven non-interactively:
+For use in CI pipelines, both modes can be driven non-interactively:
 
 ```sh
-# Run a single-pass review in CI
+# Code review in CI
 agent -p "Review the changes in this PR for correctness, design, and security issues. \
   The diff is: $(git diff origin/main...HEAD)" \
   --model opus-4.6 \
   --mode ask \
+  --output-format text \
+  --trust
+
+# Development planning in CI (e.g. for RFC generation)
+agent -p "Create a development plan for: <requirement description>" \
+  --model opus-4.6 \
+  --mode plan \
   --output-format text \
   --trust
 ```
