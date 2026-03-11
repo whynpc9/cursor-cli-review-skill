@@ -5,10 +5,10 @@ description: >-
   (1) Review — spawns multiple Cursor agent reviewers to analyze code changes from distinct
   critical perspectives (correctness, design, security); (2) Plan — spawns multiple Cursor
   agent planners to produce a structured development plan from user requirements (architecture,
-  implementation, risk analysis). Default model: opus-4.6. Use this skill when the user asks
-  for "code review", "review my changes", "review this PR", "plan this feature", "make a
-  development plan", "plan how to implement", or wants automated multi-perspective code
-  analysis or development planning.
+  implementation, risk analysis). Default model: opus-4.6. ONLY trigger this skill when the
+  user explicitly mentions "cursor" in their request — e.g. "用cursor review", "use cursor to
+  review", "cursor review my code", "用cursor做计划", "cursor plan this feature", "让cursor帮我
+  规划". Do NOT trigger on generic "review my code" or "make a plan" without the word "cursor".
 ---
 
 # Cursor CLI Code Review & Development Planning
@@ -20,14 +20,28 @@ or produce development plans, each from multiple independent perspectives.
 subagents, the Task tool, or any internal delegation mechanism — those run on your own
 model within the same session, which defeats the purpose of independent analysis.
 
+## Trigger Gate
+
+This skill requires the user to **explicitly mention "cursor"** (or equivalent like
+"cursor cli", "用cursor", "让cursor") in their request. If the user simply says "review
+my code" or "make a plan" without referencing cursor, do NOT activate this skill — use
+your built-in capabilities instead.
+
+Examples that **should** trigger: "用cursor review一下代码", "use cursor to review my
+changes", "cursor review this PR", "让cursor帮我做个开发计划", "cursor plan this feature",
+"use cursor cli to plan the implementation".
+
+Examples that **should NOT** trigger: "review my code", "code review", "make a development
+plan", "plan this feature" (no mention of cursor).
+
 ## Mode Selection
 
-Determine which mode to use based on the user's request:
+After confirming the user's request mentions cursor, determine which mode to use:
 
 | Trigger phrases | Mode |
 |---|---|
-| "review my code", "review changes", "review this PR", "code review" | **Review** — go to [Code Review](#code-review) |
-| "plan this feature", "make a plan", "how to implement", "development plan", "design a solution" | **Plan** — go to [Development Planning](#development-planning) |
+| "cursor review", "用cursor review", "cursor检查", "cursor审查代码" | **Review** — go to [Code Review](#code-review) |
+| "cursor plan", "用cursor做计划", "cursor规划", "cursor帮我设计方案" | **Plan** — go to [Development Planning](#development-planning) |
 
 If ambiguous, ask the user which mode they want.
 
