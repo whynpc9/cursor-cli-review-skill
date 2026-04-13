@@ -1,346 +1,520 @@
 ---
 name: cursor-cli-review
 description: >-
-  Code review and development planning using Cursor CLI in non-interactive mode. Two modes:
-  (1) Review — spawns multiple Cursor agent reviewers to analyze code changes from distinct
-  critical perspectives (correctness, design, security); (2) Plan — spawns multiple Cursor
-  agent planners to produce a structured development plan from user requirements (architecture,
-  implementation, risk analysis). Default model: opus-4.6. ONLY trigger this skill when the
-  user explicitly mentions "cursor" in their request — e.g. "用cursor review", "use cursor to
-  review", "cursor review my code", "用cursor做计划", "cursor plan this feature", "让cursor帮我
-  规划". Do NOT trigger on generic "review my code" or "make a plan" without the word "cursor".
+  Code review and development planning using Cursor CLI in non-interactive mode. Three modes:
+  (1) Standard Review — spawns 1-3 Cursor reviewers for correctness, design, and security;
+  (2) Adversarial Review — runs a dedicated skeptical reviewer that pressure-tests the chosen
+  approach and failure modes; (3) Plan — spawns 1-3 Cursor planners for architecture,
+  implementation, and risk analysis. Default model: opus-4.6. ONLY trigger this skill when
+  the user explicitly mentions "cursor" in their request — for example "use cursor review",
+  "cursor adversarial review", "用cursor review", "让cursor帮我做计划". Do NOT trigger on
+  generic "review my code" or "make a plan" without the word "cursor".
 ---
 
-# Cursor CLI Code Review & Development Planning
+# Cursor CLI Review And Planning
 
-Spawn Cursor CLI agents in non-interactive mode (`agent -p`) to either review code changes
-or produce development plans, each from multiple independent perspectives.
+Spawn Cursor CLI agents in non-interactive mode (`agent -p`) to either review code changes or
+produce development plans, each from clearly separated perspectives.
 
-**Hard constraint:** All agents MUST run via the Cursor CLI (`agent -p`). Do NOT use
-subagents, the Task tool, or any internal delegation mechanism — those run on your own
-model within the same session, which defeats the purpose of independent analysis.
+Hard constraint:
+- All delegated analysis in this skill MUST run via Cursor CLI using `agent -p`.
+- Do NOT use subagents, Task, or your own internal delegation as a substitute.
+- Review modes are read-only. Do not patch code while performing the review.
 
 ## Trigger Gate
 
-This skill requires the user to **explicitly mention "cursor"** (or equivalent like
-"cursor cli", "用cursor", "让cursor") in their request. If the user simply says "review
-my code" or "make a plan" without referencing cursor, do NOT activate this skill — use
-your built-in capabilities instead.
+This skill requires the user to explicitly mention `cursor`, `cursor cli`, `用cursor`, or
+`让cursor` in the request.
 
-Examples that **should** trigger: "用cursor review一下代码", "use cursor to review my
-changes", "cursor review this PR", "让cursor帮我做个开发计划", "cursor plan this feature",
-"use cursor cli to plan the implementation".
+Examples that should trigger:
+- `use cursor review my changes`
+- `cursor review this branch`
+- `cursor adversarial review this auth refactor`
+- `用cursor review 一下`
+- `让cursor帮我做个开发计划`
 
-Examples that **should NOT** trigger: "review my code", "code review", "make a development
-plan", "plan this feature" (no mention of cursor).
+Examples that should not trigger:
+- `review my code`
+- `do a code review`
+- `plan this feature`
+- `make a development plan`
+
+If the user did not mention Cursor, do not activate this skill.
 
 ## Mode Selection
 
-After confirming the user's request mentions cursor, determine which mode to use:
+After confirming the trigger gate, choose exactly one mode:
 
 | Trigger phrases | Mode |
 |---|---|
-| "cursor review", "用cursor review", "cursor检查", "cursor审查代码" | **Review** — go to [Code Review](#code-review) |
-| "cursor plan", "用cursor做计划", "cursor规划", "cursor帮我设计方案" | **Plan** — go to [Development Planning](#development-planning) |
+| `cursor review`, `用cursor review`, `cursor审查代码`, `cursor code review` | [Standard Review](#standard-review) |
+| `cursor adversarial review`, `cursor challenge review`, `用cursor挑刺`, `cursor pressure-test this`, `cursor question this design` | [Adversarial Review](#adversarial-review) |
+| `cursor plan`, `用cursor做计划`, `cursor规划`, `让cursor帮我设计方案` | [Development Planning](#development-planning) |
 
-If ambiguous, ask the user which mode they want.
+If the request says `cursor review` but also asks to challenge the chosen direction, assumptions,
+tradeoffs, or failure modes, prefer Adversarial Review.
+
+## Preconditions
+
+Before spawning any Cursor agent:
+
+1. Confirm the `agent` command is available.
+2. Confirm the current directory is the intended repository or project root.
+3. For review modes, confirm the repo has reviewable work:
+   - dirty working tree, or
+   - branch diff against an explicit or inferred base, or
+   - explicitly referenced files.
+
+If Cursor CLI is missing or unauthenticated, stop and tell the user what is missing.
 
 ---
 
-# Code Review
+# Standard Review
 
-Spawn reviewers to analyze code changes from multiple critical perspectives. The deliverable
-is a synthesized verdict — do NOT make changes to the code.
+Run 1-3 independent Cursor reviewers, each with a distinct critical lens, then synthesize the
+results into one final judgment.
 
-## Review Step 1 — Determine Scope
+## Review Step 1 — Determine Intent
 
-Identify what to review from context (recent diffs, referenced files, user message).
+State the author intent before collecting the diff. Reviewers should judge whether the change
+implements the apparent intent safely and coherently, not whether the product requirement itself
+is good.
 
-Determine the **intent** — what the author is trying to achieve. This is critical:
-reviewers judge whether the code *achieves the intent well*, not whether the intent itself
-is correct. State the intent explicitly before proceeding.
+Summarize the intent in one sentence using the user request plus the observed diff.
 
-Collect the diff based on the situation:
+## Review Step 2 — Resolve Review Target
 
-```sh
-# Uncommitted changes (staged + unstaged)
-git diff HEAD
+Choose the target deterministically. Do not improvise an arbitrary diff command.
 
-# Feature branch diff against base
-git diff main...HEAD
+### Supported targets
 
-# Staged changes only
-git diff --cached
+- Working tree review
+- Branch review against a base ref
+- Explicit file-focused review
 
-# Specific files
-git diff -- path/to/file1 path/to/file2
-```
+### Resolution rules
 
-If the diff is very large (>2000 lines), consider scoping to the most critical files or
-asking the user which areas to focus on.
+1. If the user explicitly names files, scope the review to those files first.
+2. If the user provides `--base <ref>` or clearly names a base branch, use branch review.
+3. If the user explicitly asks for working tree or current changes, use working tree review.
+4. Otherwise:
+   - If the repository is dirty, review the working tree.
+   - If the repository is clean, review the current branch against the detected default branch.
 
-## Review Step 2 — Select Reviewers
+### Default branch detection
 
-Assess change size and assign reviewer lenses:
+Try these in order:
 
-| Size   | Threshold                   | Reviewers                                |
-|--------|-----------------------------|------------------------------------------|
-| Small  | < 50 lines, 1–2 files      | 1 (Correctness)                          |
-| Medium | 50–200 lines, 3–5 files    | 2 (Correctness + Design)                 |
-| Large  | 200+ lines or 5+ files     | 3 (Correctness + Design + Security)      |
+1. `refs/remotes/origin/HEAD`
+2. local or remote `main`
+3. local or remote `master`
+4. local or remote `trunk`
 
-### Reviewer Lenses
+If the repo is clean and no base branch can be inferred, ask the user for the base ref instead
+of guessing.
 
-**Correctness** — Logic errors, edge cases, off-by-one bugs, null/undefined handling,
-race conditions, incorrect assumptions about data types or shapes, missing error handling,
-broken control flow, incorrect return values.
-
-**Design** — Abstraction quality, separation of concerns, naming clarity, code duplication,
-adherence to project conventions and patterns, testability, extensibility, unnecessary
-complexity, violation of SOLID principles, poor API surface.
-
-**Security** — Input validation, injection risks (SQL, XSS, command), authentication and
-authorization gaps, secrets or credentials in code, unsafe deserialization, SSRF/CSRF
-vectors, dependency vulnerabilities, insecure defaults, information leakage in error
-messages.
-
-## Review Step 3 — Spawn Reviewers via Cursor CLI
-
-Create a temp directory for reviewer output:
+### Recommended commands
 
 ```sh
-REVIEW_DIR=$(mktemp -d /tmp/cursor-cli-review.XXXXXX)
+# Repository sanity
+git rev-parse --show-toplevel
+git branch --show-current
+git status --short --untracked-files=all
+
+# Working tree file sets
+git diff --cached --name-only
+git diff --name-only
+git ls-files --others --exclude-standard
+
+# Branch review
+git merge-base HEAD <base>
+git diff --name-only <base>...HEAD
+git diff --stat <base>...HEAD
+git diff <base>...HEAD
 ```
 
-Save the diff to a file so reviewers can access it:
+## Review Step 3 — Collect Review Context
 
-```sh
-git diff HEAD > "$REVIEW_DIR/diff.patch"
-# or whichever diff command matches the scope from Step 1
+Do not always inline the full diff. Choose the input strategy based on size.
+
+### Thresholds
+
+- `MAX_INLINE_FILES = 2`
+- `MAX_INLINE_DIFF_BYTES = 262144` (256 KiB)
+- `MAX_UNTRACKED_BYTES = 24576` (24 KiB per untracked text file)
+
+### Input modes
+
+#### `inline-diff`
+
+Use inline diff when both are true:
+
+- changed files `<= 2`
+- combined diff size `<= 256 KiB`
+
+Provide:
+
+- `git status --short --untracked-files=all`
+- staged diff
+- unstaged diff
+- branch diff if branch review
+- contents of untracked text files within the size limit
+
+#### `self-collect`
+
+Use lightweight context when either threshold is exceeded.
+
+Provide only:
+
+- `git status --short --untracked-files=all`
+- diff stat
+- changed file list
+- commit log for branch review
+- contents of untracked text files within the size limit
+
+Then explicitly instruct the Cursor reviewer to inspect the target diff itself using read-only
+git commands before finalizing findings.
+
+### Untracked file handling
+
+Treat untracked files as reviewable input.
+
+- Include small text files.
+- Skip directories.
+- Skip binary files.
+- Skip broken symlinks or unreadable paths.
+- If a file exceeds `MAX_UNTRACKED_BYTES`, note that it was skipped due to size.
+
+## Review Step 4 — Select Reviewers
+
+Size the reviewer set from the change size:
+
+| Size | Threshold | Reviewers |
+|---|---|---|
+| Small | under 50 changed lines or 1-2 files | 1 reviewer: Correctness |
+| Medium | 50-200 changed lines or 3-5 files | 2 reviewers: Correctness + Design |
+| Large | over 200 changed lines or more than 5 files | 3 reviewers: Correctness + Design + Security |
+
+### Reviewer lenses
+
+**Correctness**
+- Logic errors
+- edge cases
+- null or undefined handling
+- off-by-one behavior
+- race conditions
+- broken control flow
+- invalid data-shape assumptions
+- missing error handling
+
+**Design**
+- poor abstraction boundaries
+- unnecessary complexity
+- duplication
+- weak naming when it obscures behavior
+- poor testability
+- extension hazards
+- mismatch with repository conventions
+
+**Security**
+- input validation gaps
+- auth or authorization issues
+- unsafe command, SQL, or HTML handling
+- trust-boundary violations
+- secret leakage
+- insecure defaults
+- failure modes that expose sensitive state
+
+Do not ask any reviewer to give style-only feedback.
+
+## Review Step 5 — Reviewer Output Contract
+
+Every Cursor reviewer must return only valid JSON following the schema in
+[references/review-output-schema.json](./references/review-output-schema.json).
+
+Top-level shape:
+
+```json
+{
+  "verdict": "approve | needs-attention",
+  "summary": "short ship/no-ship assessment",
+  "findings": [
+    {
+      "severity": "critical | high | medium | low",
+      "title": "short finding title",
+      "body": "grounded explanation",
+      "file": "relative/path.ts",
+      "line_start": 10,
+      "line_end": 14,
+      "confidence": 0.82,
+      "recommendation": "concrete remediation"
+    }
+  ],
+  "next_steps": ["..."]
+}
 ```
 
-Spawn each reviewer using `agent -p` in non-interactive print mode. The default model is
-`opus-4.6`; override with a different `--model` if the user requests it.
+Rules for every reviewer:
 
-```sh
-agent -p "REVIEWER_PROMPT" \
-  --model opus-4.6 \
-  --mode ask \
-  --output-format text \
-  --trust \
-  > "$REVIEW_DIR/correctness.md" 2>/dev/null
-```
+- Return JSON only. No markdown fences. No preamble.
+- Report only material findings.
+- Every finding must cite a concrete file and line range.
+- If a conclusion depends on inference, say so in `body` and lower `confidence`.
+- Prefer one strong finding over several weak ones.
+- If there are no material issues within the lens, return `approve` with an empty `findings` array.
 
-Run each reviewer command with `is_background: true` and spawn **all reviewers in parallel**.
-Monitor completion by checking if the background processes have finished.
+## Review Step 6 — Reviewer Prompt Template
 
-### Reviewer prompt template
+Use a prompt of this shape for each standard reviewer:
 
-Each reviewer gets a single prompt containing:
-
-1. Their assigned lens (full description from the Reviewer Lenses section above)
-2. The diff content to review (inline in the prompt, read from the saved diff file)
-3. These instructions:
-
-```
+```text
 You are a code reviewer focusing on [{LENS_NAME}].
 
 Your lens definition:
 {LENS_FULL_DESCRIPTION}
 
-Your job is to find real problems, not validate the work. Be specific — cite file
-paths, line numbers, and concrete failure scenarios.
+Author intent:
+{INTENT_SUMMARY}
 
-Rate each finding by severity:
-- critical: Blocks merge — will cause bugs, data loss, or security vulnerabilities
-- warning: Should fix before merge — potential issues, poor patterns, subtle bugs
-- info: Worth noting — style improvements, minor suggestions
+Review target:
+{TARGET_LABEL}
 
-Write findings as a numbered markdown list. For each finding include:
-- **[severity]** one-line summary
-- File: path and line number(s)
-- Issue: detailed description of the problem
-- Impact: what could go wrong
-- Fix: concrete suggestion (not vague advice)
+Review input mode:
+{INPUT_MODE}
 
-If you find no issues within your lens, explicitly state that with a brief explanation
-of what you checked.
+Instructions:
+- Find real implementation risks, not style nits.
+- Ground every finding in the provided repository context or in read-only git inspection.
+- If the input mode is self-collect, inspect the relevant diff yourself with read-only git commands before finalizing.
+- Return only valid JSON matching the provided schema.
+- Use approve only if you cannot support any material finding from this lens.
 
-Here is the diff to review:
+Repository context:
 ---
-{DIFF_CONTENT}
+{REVIEW_INPUT}
 ---
 ```
 
-Name each output file after the lens: `correctness.md`, `design.md`, `security.md`.
+Name output files after the lens, for example `correctness.json`, `design.json`, `security.json`.
 
-## Review Step 4 — Verify and Synthesize Verdict
+## Review Step 7 — Verify And Synthesize
 
-Before reading reviewer output, confirm the output files exist and are non-empty:
+Before synthesizing:
 
-```sh
-ls -la "$REVIEW_DIR"/*.md
-```
+1. Verify every expected output file exists and is non-empty.
+2. Parse every file as JSON.
+3. If any reviewer output is invalid JSON, report that explicitly instead of silently skipping it.
+4. Deduplicate overlapping findings across lenses.
 
-If any output file is missing or empty, note the failure in the verdict — do not silently
-skip a reviewer.
+Synthesis rules:
 
-Read each reviewer's output file from `$REVIEW_DIR/`. Deduplicate overlapping findings
-(different reviewers may flag the same issue from different angles — merge these into a
-single finding noting all relevant perspectives).
+- Merge duplicate findings when they point to the same file, overlapping lines, and the same root issue.
+- Preserve all relevant lenses that independently raised the issue.
+- Sort findings by severity first, then confidence.
 
-Produce a single verdict:
+Final judgment mapping:
 
-```
+- `APPROVE` when no reviewer reports a material finding
+- `NEEDS ATTENTION` when there are only `high`, `medium`, or `low` findings
+- `BLOCK` when any `critical` finding remains after synthesis
+
+Render the final result as:
+
+```text
 ## Review Scope
-<what was reviewed — branch, files, lines changed, intent>
+<target, file count, input mode, intent>
 
-## Verdict: PASS | NEEDS CHANGES | BLOCK
-<one-line summary>
+## Verdict
+APPROVE | NEEDS ATTENTION | BLOCK
 
 ## Findings
-<numbered list, ordered by severity (critical → warning → info)>
+<numbered list ordered by severity>
 
 For each finding:
-- **[severity]** Description with file:line references
-- Lens: which reviewer raised it
-- Impact: what could go wrong
-- Fix: concrete action
+- Severity
+- File and lines
+- Lenses
+- Why it matters
+- Recommended fix
+- Confidence
 
-## What Went Well
-<1–3 things the reviewers found no issue with — acknowledge good patterns and decisions>
-```
+## Reviewer Failures
+<any missing or unparsable reviewer outputs>
 
-**Verdict logic:**
-- **PASS** — no critical or warning findings
-- **NEEDS CHANGES** — warning-level findings but no critical issues
-- **BLOCK** — one or more critical findings
-
-## Review Step 5 — Render Judgment
-
-After synthesizing the reviewers, apply your own judgment. Reviewers are instructed to be
-thorough and may over-flag. Using the stated intent and project context as your frame,
-state which findings you accept and which you consider false positives — and why.
-
-Append to the verdict:
-
-```
 ## Final Assessment
-<for each finding: accept or dismiss with a one-line rationale>
+<which findings you accept, dismiss, or downgrade, with one-line rationale>
 
 ## Recommended Actions
-<prioritized list of what the author should address before merging>
+<prioritized next steps>
 ```
 
-## Review Step 6 — Clean Up
+Apply your own judgment after reading the reviewers. Do not treat every reviewer finding as
+automatically correct.
 
-```sh
-rm -rf "$REVIEW_DIR"
+---
+
+# Adversarial Review
+
+Run a single dedicated Cursor reviewer whose job is to challenge whether the chosen approach
+should ship at all.
+
+Use this mode when the user wants to pressure-test design choices, tradeoffs, invariants,
+rollback behavior, concurrency assumptions, or hidden failure modes.
+
+## Adversarial Step 1 — Reuse Target Resolution And Context Collection
+
+Use the exact same target resolution and context collection rules as Standard Review.
+
+## Adversarial Step 2 — Use A Skeptical Operating Stance
+
+The reviewer should actively try to disprove the change.
+
+Prioritize:
+
+- auth, permissions, and trust boundaries
+- data loss, duplication, corruption, and irreversible writes
+- rollback safety, retries, and idempotency
+- race conditions and stale-state assumptions
+- timeout, null, and degraded-dependency behavior
+- schema drift and compatibility risk
+- observability gaps that would hide failure
+
+Do not waste time on naming, formatting, or cosmetic feedback.
+
+## Adversarial Step 3 — Optional User Focus
+
+If the user named a concern, weight it heavily. Examples:
+
+- `challenge whether this caching design is safe`
+- `look for race conditions`
+- `pressure-test the migration rollback path`
+
+Still report any other material issue you can defend.
+
+## Adversarial Step 4 — Output Contract
+
+Use the same JSON schema as Standard Review:
+
+- `verdict`
+- `summary`
+- `findings`
+- `next_steps`
+
+Return `needs-attention` if there is any material risk worth blocking on.
+Return `approve` only if you cannot support any substantive adversarial finding from the
+provided context.
+
+## Adversarial Step 5 — Prompt Template
+
+Use a prompt of this shape:
+
+```text
+You are performing an adversarial software review.
+Your job is to break confidence in the change, not to validate it.
+
+Target:
+{TARGET_LABEL}
+
+Author intent:
+{INTENT_SUMMARY}
+
+User focus:
+{USER_FOCUS_OR_NONE}
+
+Operating stance:
+- Default to skepticism.
+- Assume the change can fail in subtle, expensive, user-visible ways until the evidence says otherwise.
+- If something only works on the happy path, treat that as a real weakness.
+
+Method:
+- Look for violated invariants, missing guards, unhandled failure paths, and assumptions that break under retries, concurrency, or partial completion.
+- If the input mode is self-collect, inspect the target diff yourself using read-only git commands before finalizing.
+- Report only material findings.
+- Return only valid JSON matching the provided schema.
+
+Repository context:
+---
+{REVIEW_INPUT}
+---
 ```
+
+## Adversarial Step 6 — Render Result
+
+Render the result in the same final format as Standard Review, but label the mode as
+`Adversarial Review`.
+
+If the adversarial reviewer returns no findings, say that explicitly and keep the conclusion
+short.
 
 ---
 
 # Development Planning
 
-Spawn planners to produce a structured development plan based on user requirements. Each
-planner analyzes the codebase and requirements from a different perspective, then their
-outputs are synthesized into a single actionable plan. The deliverable is a plan document
-— do NOT implement any code.
+Spawn Cursor planners to produce a concrete development plan. The deliverable is a plan document.
+Do not implement code in this mode.
 
 ## Plan Step 1 — Clarify Requirements
 
-Extract the user's requirements from their message. Summarize:
+Summarize:
 
-1. **Goal** — what the user wants to build or change (one sentence)
-2. **Context** — relevant existing code, constraints, or preferences mentioned
-3. **Scope** — is this a new feature, refactor, migration, integration, or bug fix?
+1. Goal
+2. Context
+3. Scope
+4. Constraints
 
-If the requirements are vague, ask the user to clarify before proceeding. A good plan
-needs clear input.
+If the requirements are too vague to plan responsibly, ask the user to clarify.
 
-Gather codebase context for the planners:
+## Plan Step 2 — Gather Codebase Context
+
+Collect lightweight repository context before spawning planners:
 
 ```sh
-# Project structure overview
 find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' | head -100
-
-# Key config files
 cat package.json 2>/dev/null || cat requirements.txt 2>/dev/null || cat go.mod 2>/dev/null || true
+git status --short --untracked-files=all
 ```
 
-## Plan Step 2 — Select Planners
+Read additional files only when they are clearly relevant to the requested plan.
 
-Assess requirement complexity and assign planner lenses:
+## Plan Step 3 — Select Planners
 
 | Complexity | Threshold | Planners |
 |---|---|---|
-| Simple | Single file or small change, clear approach | 1 (Implementer) |
-| Medium | Multiple files, some design decisions needed | 2 (Architect + Implementer) |
-| Complex | Cross-cutting concerns, new subsystem, or major refactor | 3 (Architect + Implementer + Risk Analyst) |
+| Simple | single file or obvious local change | Implementer |
+| Medium | multiple files with some design choices | Architect + Implementer |
+| Complex | cross-cutting change, new subsystem, migration, risky refactor | Architect + Implementer + Risk Analyst |
 
-### Planner Lenses
+### Planner lenses
 
-**Architect** — High-level system design: component boundaries, data flow, API contracts,
-module dependencies, technology choices, patterns to follow (or avoid), how the new work
-fits into the existing codebase structure.
+**Architect**
+- component boundaries
+- data flow
+- API contracts
+- module placement
+- how the work fits the existing codebase
 
-**Implementer** — Concrete implementation steps: which files to create or modify, function
-signatures, data structures, migration steps, configuration changes, the exact sequence of
-work broken into small mergeable increments.
+**Implementer**
+- exact files to modify
+- function or module changes
+- dependency order
+- small mergeable steps
 
-**Risk Analyst** — Potential pitfalls: edge cases, breaking changes, backward compatibility,
-performance implications, dependency conflicts, testing gaps, operational concerns
-(deployment, rollback), areas where requirements are ambiguous and assumptions may be wrong.
+**Risk Analyst**
+- migration hazards
+- backward compatibility
+- operational risk
+- testing gaps
+- ambiguity in the requirements
 
-## Plan Step 3 — Spawn Planners via Cursor CLI
+## Plan Step 4 — Planner Prompt Template
 
-Create a temp directory for planner output:
+Use a prompt of this shape for each planner:
 
-```sh
-PLAN_DIR=$(mktemp -d /tmp/cursor-cli-plan.XXXXXX)
-```
-
-Save the codebase context to a file for planners to reference:
-
-```sh
-echo "=== Project Structure ===" > "$PLAN_DIR/context.txt"
-find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' | head -100 >> "$PLAN_DIR/context.txt"
-echo -e "\n=== Key Config ===" >> "$PLAN_DIR/context.txt"
-cat package.json 2>/dev/null >> "$PLAN_DIR/context.txt" || true
-```
-
-Spawn each planner using `agent -p` in non-interactive print mode with plan mode. The
-default model is `opus-4.6`; override with a different `--model` if the user requests it.
-
-```sh
-agent -p "PLANNER_PROMPT" \
-  --model opus-4.6 \
-  --mode plan \
-  --output-format text \
-  --trust \
-  > "$PLAN_DIR/architect.md" 2>/dev/null
-```
-
-Run each planner command with `is_background: true` and spawn **all planners in parallel**.
-
-### Planner prompt template
-
-Each planner gets a single prompt containing:
-
-1. Their assigned lens (full description from the Planner Lenses section above)
-2. The user's requirements
-3. The codebase context
-4. These instructions:
-
-```
+```text
 You are a development planner focusing on [{LENS_NAME}].
 
 Your lens definition:
 {LENS_FULL_DESCRIPTION}
-
-Your job is to analyze the requirements and codebase, then produce a thorough plan
-from your perspective. Be specific — reference actual files, directories, and patterns
-found in the codebase.
 
 Requirements:
 ---
@@ -352,125 +526,57 @@ Codebase context:
 {CODEBASE_CONTEXT}
 ---
 
-Structure your output as:
-
-## {LENS_NAME} Analysis
-
-### Key Observations
-<what you noticed about the codebase relevant to this task>
-
-### Recommendations
-<numbered list of specific recommendations from your lens>
-
-### Detailed Plan
-<step-by-step breakdown from your perspective, referencing concrete files and code>
-
-Be concrete: name files, functions, and modules. Avoid vague advice like "consider
-performance" — instead say exactly what to do and where.
+Return a concrete plan from your lens. Be specific:
+- cite actual files, directories, modules, and patterns
+- avoid vague advice
+- propose incremental steps rather than one giant rewrite
 ```
 
-Name each output file after the lens: `architect.md`, `implementer.md`, `risk-analyst.md`.
+## Plan Step 5 — Synthesize The Final Plan
 
-## Plan Step 4 — Verify and Synthesize Plan
+Merge the planner outputs into:
 
-Before reading planner output, confirm the output files exist and are non-empty:
-
-```sh
-ls -la "$PLAN_DIR"/*.md
-```
-
-If any output file is missing or empty, note the failure in the plan — do not silently
-skip a planner.
-
-Read each planner's output file from `$PLAN_DIR/`. Merge overlapping observations and
-resolve conflicts (where planners disagree, note both perspectives and your recommendation).
-
-Produce a single development plan:
-
-```
+```text
 ## Requirements
 <restated goal and scope>
 
 ## Architecture Overview
-<high-level design from the Architect's analysis — components, data flow, key decisions>
+<high-level design and key decisions>
 
 ## Implementation Plan
-<ordered list of incremental steps from the Implementer's analysis>
+<ordered incremental steps with files and dependencies>
 
-For each step:
-- **Step N**: one-line summary
-- Files: which files to create or modify
-- Details: what to do
-- Dependencies: which steps must complete first
-
-## Risk Assessment
-<findings from the Risk Analyst, ordered by likelihood × impact>
-
-For each risk:
-- **[high/medium/low]** Description
-- Mitigation: concrete preventive action
+## Risks
+<ordered by impact x likelihood, with mitigations>
 
 ## Open Questions
-<anything that remains ambiguous and needs user input before implementation>
-```
+<ambiguities that still need a decision>
 
-## Plan Step 5 — Render Judgment
-
-After synthesizing, apply your own judgment. Planners may over-engineer or miss simpler
-approaches. Evaluate:
-
-- Is the plan proportional to the requirement's complexity?
-- Are there simpler alternatives the planners overlooked?
-- Do the implementation steps form a logical, incremental sequence?
-- Are the risks realistic or exaggerated?
-
-Append to the plan:
-
-```
 ## Final Recommendation
-<your assessment of the plan — what to follow as-is, what to simplify, what to watch out for>
+<what to follow, what to simplify, what to watch out for>
 
 ## Suggested Milestones
-<break the plan into 2–4 checkpoints where the user can verify progress before continuing>
+<2-4 checkpoints>
 ```
 
-## Plan Step 6 — Clean Up
-
-```sh
-rm -rf "$PLAN_DIR"
-```
+Apply your own judgment after synthesis. Simplify over-engineered plans when appropriate.
 
 ---
 
 ## Configuration
 
-| Parameter     | Default      | Description                                         |
-|---------------|--------------|-----------------------------------------------------|
-| Model         | `opus-4.6`   | Override via user request or env `CURSOR_REVIEW_MODEL` |
-| Review mode   | `ask`        | Read-only review mode (reviewers cannot edit code)  |
-| Plan mode     | `plan`       | Planning mode (planners analyze but don't implement) |
-| Output format | `text`       | Plain text agent output                             |
+| Parameter | Default | Description |
+|---|---|---|
+| Model | `opus-4.6` | Override if the user requests a different Cursor model |
+| Review mode | `ask` | Read-only Cursor review mode |
+| Plan mode | `plan` | Cursor planning mode |
+| Output format | `text` | Use plain text transport, but reviewer content must be JSON |
 
-The `--trust` flag skips workspace trust prompts in non-interactive mode. Review agents use
-`--mode ask` (read-only). Plan agents use `--mode plan` (analysis and planning without edits).
+Use `--trust` in non-interactive mode to skip trust prompts when appropriate.
 
-## CI/CD Integration
+## Operational Notes
 
-For use in CI pipelines, both modes can be driven non-interactively:
-
-```sh
-# Code review in CI
-agent -p "Review the changes in this PR for correctness, design, and security issues. \
-  The diff is: $(git diff origin/main...HEAD)" \
-  --model opus-4.6 \
-  --mode ask \
-  --output-format text \
-  --trust
-
-# Development planning in CI (e.g. for RFC generation)
-agent -p "Create a development plan for: <requirement description>" \
-  --model opus-4.6 \
-  --mode plan \
-  --output-format text \
-  --trust
-```
+- Spawn all reviewers or planners in parallel when there is more than one.
+- Store reviewer output in a temp directory and clean it up after synthesis.
+- Never silently ignore a missing reviewer result.
+- Never claim a finding is grounded if the supporting diff or file was not actually inspected.
