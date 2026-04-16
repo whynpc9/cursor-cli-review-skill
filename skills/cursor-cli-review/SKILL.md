@@ -92,14 +92,21 @@ Choose the target deterministically. Do not improvise an arbitrary diff command.
 - Branch review against a base ref
 - Explicit file-focused review
 
+Default exclusion:
+
+- Ignore files under `.agents/` by default.
+- Include `.agents/` only when the user explicitly names a file under `.agents/` or clearly says to include `.agents/`.
+
 ### Resolution rules
 
 1. If the user explicitly names files, scope the review to those files first.
+   - If any explicitly named file is under `.agents/`, include that path.
 2. If the user provides `--base <ref>` or clearly names a base branch, use branch review.
 3. If the user explicitly asks for working tree or current changes, use working tree review.
 4. Otherwise:
    - If the repository is dirty, review the working tree.
    - If the repository is clean, review the current branch against the detected default branch.
+5. Unless the user explicitly opted in, filter `.agents/` paths out of the review target, changed-file lists, and untracked-file content collection.
 
 ### Default branch detection
 
@@ -132,6 +139,8 @@ git diff --name-only <base>...HEAD
 git diff --stat <base>...HEAD
 git diff <base>...HEAD
 ```
+
+After collecting file lists, exclude paths under `.agents/` unless the user explicitly asked to include them.
 
 ## Review Step 3 — Collect Review Context
 
@@ -180,6 +189,7 @@ git commands before finalizing findings.
 Treat untracked files as reviewable input.
 
 - Include small text files.
+- Exclude `.agents/` by default unless explicitly requested.
 - Skip directories.
 - Skip binary files.
 - Skip broken symlinks or unreadable paths.
@@ -363,7 +373,8 @@ rollback behavior, concurrency assumptions, or hidden failure modes.
 
 ## Adversarial Step 1 — Reuse Target Resolution And Context Collection
 
-Use the exact same target resolution and context collection rules as Standard Review.
+Use the exact same target resolution and context collection rules as Standard Review, including
+the default exclusion of `.agents/` unless the user explicitly opts in.
 
 ## Adversarial Step 2 — Use A Skeptical Operating Stance
 
@@ -469,12 +480,13 @@ If the requirements are too vague to plan responsibly, ask the user to clarify.
 Collect lightweight repository context before spawning planners:
 
 ```sh
-find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' | head -100
+find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' -not -path '*/.agents/*' | head -100
 cat package.json 2>/dev/null || cat requirements.txt 2>/dev/null || cat go.mod 2>/dev/null || true
 git status --short --untracked-files=all
 ```
 
 Read additional files only when they are clearly relevant to the requested plan.
+Ignore `.agents/` here too unless the user explicitly asked to include that directory or a file within it.
 
 ## Plan Step 3 — Select Planners
 

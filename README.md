@@ -9,6 +9,7 @@ A skill that uses [Cursor CLI](https://cursor.com/docs/cli/overview) in non-inte
 - Added deterministic review target selection for working tree, branch diff, and explicit file review
 - Added large-diff handling: small diffs are inlined, larger diffs use lightweight context plus read-only self-collection
 - Added explicit handling for untracked files, large files, binary files, directories, and broken symlinks
+- Added a default exclusion for `.agents/`, with opt-in inclusion when the user explicitly names `.agents/...` paths or asks to include that directory
 
 ## Modes
 
@@ -18,6 +19,7 @@ A skill that uses [Cursor CLI](https://cursor.com/docs/cli/overview) in non-inte
    - working tree when the repo is dirty
    - branch diff when the repo is clean
    - explicit files or base branch when the user specifies them
+   - `.agents/` excluded by default unless explicitly requested
 2. Chooses 1-3 reviewers based on change size:
    - **Correctness**
    - **Design**
@@ -84,6 +86,8 @@ cursor plan how to migrate this service to TypeScript
 ```
 
 It should not trigger on generic requests like `review my code` or `plan this feature`.
+
+By default, review and planning context ignore files under `.agents/`. If you want them included, ask explicitly, for example `use cursor review .agents/skills/foo/SKILL.md`.
 
 ## Review output schema
 
